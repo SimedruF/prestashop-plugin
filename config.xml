@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module>
+    <name>samedaycourier</name>
+    <displayName><![CDATA[Sameday Courier]]></displayName>
+    <version><![CDATA[2.0.0]]></version>
+    <description><![CDATA[Shipping module for Sameday Courier.]]></description>
+    <author><![CDATA[Sameday Courier]]></author>
+    <tab><![CDATA[shipping_logistics]]></tab>
+    <confirmUninstall><![CDATA[Are you sure you want to uninstall this module?]]></confirmUninstall>
+    <is_configurable>1</is_configurable>
+    <need_instance>0</need_instance>
+    <limited_countries></limited_countries>
+</module>
