@@ -86,6 +86,11 @@ class SamedayCourier extends CarrierModule
             'locker_options_map' => 'checkout_lockers.v17.tpl',
             'locker_options_selector' => 'checkout_lockers_selector.v17.tpl',
             'open_package_option' => 'checkout_open_package.v17.tpl'
+        ],
+        '8' => [
+            'locker_options_map' => 'checkout_lockers.v8.tpl',
+            'locker_options_selector' => 'checkout_lockers_selector.v8.tpl',
+            'open_package_option' => 'checkout_open_package.v8.tpl'
         ]
     ];
 
@@ -112,7 +117,7 @@ class SamedayCourier extends CarrierModule
         $this->name = 'samedaycourier';
         $this->tab = 'shipping_logistics';
 
-        $this->version = '1.8.1';
+        $this->version = '2.0.0';
         $this->author = 'Sameday Courier';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -124,7 +129,7 @@ class SamedayCourier extends CarrierModule
         $this->description = $this->l('Shipping module for Sameday Courier.');
         $this->confirmUninstall = $this->l('Are you sure you want to uninstall this module?');
         $this->currentIndex = AdminController::$currentIndex . '&configure=' . $this->name;
-        $this->ps_versions_compliancy = array('min' => '1.6', 'max' => _PS_VERSION_);
+        $this->ps_versions_compliancy = array('min' => '1.6', 'max' => '8.2.99');
         $this->logger = new FileLogger(0);
         $this->logger->setFilename(__DIR__ . '/log/' . md5(date('Ymd')) . '_sameday.log');
         $this->messages = array();
@@ -168,12 +173,14 @@ class SamedayCourier extends CarrierModule
 
         Configuration::updateValue('SAMEDAY_CRON_TOKEN', uniqid('', ''));
 
-        include(__DIR__ . '/sql/install.php');
-
-        $hookDisplayAdminOrder = 'displayAdminOrderSide';
-        if (($this->getMajorVersion() === 1) && ($this->getMinorVersion() === 6)) {
-            $hookDisplayAdminOrder = 'displayAdminOrderContentShip';
+        // Execute SQL installation
+        if (!$this->installDb()) {
+            $this->_errors[] = $this->l('Database installation failed');
+            return false;
         }
+
+        // Debug: Check if tables were created
+        $this->debugDatabaseTables();
 
         // Common Hook between version:
         $this->registerHook('actionCarrierUpdate');
@@ -182,13 +189,21 @@ class SamedayCourier extends CarrierModule
         $this->registerHook('actionCarrierProcess');
         $this->registerHook('actionValidateStepComplete');
 
+        // Version-specific hooks
         $hookDisplayAdminOrder = 'displayAdminOrderSide';
         $hookExtraCarrier = 'displayCarrierExtraContent';
         $hookHeader = 'displayHeader';
+        
         if (($this->getMajorVersion() === 1) && ($this->getMinorVersion() === 6)) {
             $hookDisplayAdminOrder = 'displayAdminOrderContentShip';
             $hookExtraCarrier = 'extraCarrier';
             $hookHeader = 'Header';
+        }
+
+        // Additional hooks for PS 8.x
+        if ($this->getMajorVersion() >= 8) {
+            $this->registerHook('displayCarrierList');
+            $this->registerHook('displayOrderDetail');
         }
 
         $this->registerHook($hookDisplayAdminOrder);
@@ -196,6 +211,165 @@ class SamedayCourier extends CarrierModule
         $this->registerHook($hookHeader);
 
         return parent::install();
+    }
+
+    /**
+     * Install database tables
+     * @return bool
+     */
+    private function installDb()
+    {
+        $queries = array();
+        $prefix = _DB_PREFIX_;
+
+        // Check if tables already exist to avoid errors
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_services` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_service` int(11) unsigned NOT NULL,
+                      `name` varchar(50) NOT NULL DEFAULT '',
+                      `code` varchar(10) NOT NULL DEFAULT '',
+                      `delivery_type` tinyint(1) NOT NULL,
+                      `delivery_type_name` varchar(50) NOT NULL,
+                      `price` decimal(10,2) NOT NULL DEFAULT '0.00',
+                      `free_delivery` tinyint(1) NOT NULL DEFAULT '0',
+                      `free_shipping_threshold` decimal(10,2) NULL DEFAULT '0.00',
+                      `id_carrier` int(11) DEFAULT NULL,
+                      `status` tinyint(1) NOT NULL DEFAULT '0',
+                      `disabled` tinyint(1) NOT NULL DEFAULT '0',
+                      `live_mode` tinyint(1) NOT NULL DEFAULT '0',
+                      `service_optional_taxes` TEXT,
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_pickup_points` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_pickup_point` int(11) unsigned NOT NULL,
+                      `sameday_alias` varchar(100) NOT NULL DEFAULT '',
+                      `county` varchar(100) NOT NULL DEFAULT '',
+                      `city` varchar(255) NOT NULL DEFAULT '',
+                      `address` varchar(255) NOT NULL DEFAULT '',
+                      `is_default` tinyint(1) NOT NULL DEFAULT '0',
+                      `live_mode` tinyint(1) NOT NULL DEFAULT '0',
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_awb` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_order` int(11) NOT NULL,
+                      `awb_number` varchar(50) NOT NULL DEFAULT '',
+                      `awb_cost` decimal(10,2) DEFAULT NULL,
+                      `created` datetime DEFAULT NULL,
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_awb_parcel` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_awb` int(11) unsigned NOT NULL,
+                      `awb_number` varchar(50) NOT NULL DEFAULT '',
+                      `position` tinyint(2) NOT NULL,
+                      `status_sync` text,
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_awb_parcel_history` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `awb_number` varchar(50) NOT NULL DEFAULT '',
+                      `summary` text,
+                      `history` text,
+                      `expedition` text,
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_lockers` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_locker` int(11) unsigned NOT NULL,
+                      `name` varchar(100) NOT NULL DEFAULT '',
+                      `county` varchar(100) NOT NULL DEFAULT '',
+                      `city` varchar(100) NOT NULL DEFAULT '',
+                      `address` varchar(255) NOT NULL DEFAULT '',
+                      `postal_code` varchar(16) NOT NULL DEFAULT '',
+                      `lat` varchar(32) NOT NULL DEFAULT '',
+                      `long` varchar(32) NOT NULL DEFAULT '',
+                      `live_mode` tinyint(1) NOT NULL DEFAULT '0',
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_cities` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `city_id` int(11) unsigned NOT NULL,
+                      `city_name` varchar(100) NOT NULL DEFAULT '',
+                      `county_code` varchar(100) NOT NULL DEFAULT '',
+                      `country_code` varchar(100) NOT NULL DEFAULT '',
+                      `postal_code` varchar(16) NOT NULL DEFAULT '',
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_order_locker` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_order` int(11) unsigned NOT NULL,
+                      `id_locker` int(11) unsigned NOT NULL,
+                      `name_locker` TEXT,
+                      `address_locker` TEXT,
+                      `service_code` varchar(5),
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        $queries[] = "CREATE TABLE IF NOT EXISTS `{$prefix}sameday_open_package` (
+                      `id` int(11) unsigned NOT NULL AUTO_INCREMENT,
+                      `id_order` int(11) unsigned NOT NULL,
+                      `is_open_package` tinyint(1) NOT NULL DEFAULT '0',
+                      PRIMARY KEY (`id`)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
+
+        // Add column to cart table if it doesn't exist
+        $queries[] = "ALTER TABLE `{$prefix}cart` ADD COLUMN `sameday_locker` TEXT NULL";
+
+        $db = Db::getInstance();
+        foreach ($queries as $query) {
+            try {
+                $result = $db->execute($query);
+                if (!$result && !strpos($query, 'ADD COLUMN')) {
+                    // Only fail for CREATE TABLE errors, not ALTER TABLE (column might exist)
+                    return false;
+                }
+            } catch (Exception $e) {
+                // Log but don't fail for ALTER TABLE errors (column might already exist)
+                if (!strpos($query, 'ADD COLUMN')) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Debug database tables to verify installation
+     */
+    private function debugDatabaseTables()
+    {
+        $prefix = _DB_PREFIX_;
+        $tables = array(
+            'sameday_services',
+            'sameday_pickup_points', 
+            'sameday_awb',
+            'sameday_awb_parcel',
+            'sameday_awb_parcel_history',
+            'sameday_lockers',
+            'sameday_cities',
+            'sameday_order_locker',
+            'sameday_open_package'
+        );
+
+        $db = Db::getInstance();
+        foreach ($tables as $table) {
+            $exists = $db->executeS("SHOW TABLES LIKE '{$prefix}{$table}'");
+            if (empty($exists)) {
+                error_log("SAMEDAY DEBUG: Table {$prefix}{$table} NOT CREATED!");
+            } else {
+                error_log("SAMEDAY DEBUG: Table {$prefix}{$table} created successfully");
+            }
+        }
     }
 
     /**
@@ -231,9 +405,19 @@ class SamedayCourier extends CarrierModule
         }
 
         // Uninstall SQL
-        include(__DIR__ . '/sql/uninstall.php');
+        $this->uninstallDb();
 
         return parent::uninstall();
+    }
+
+    /**
+     * Uninstall database tables
+     * @return bool
+     */
+    private function uninstallDb()
+    {
+        include(__DIR__ . '/sql/uninstall.php');
+        return true;
     }
 
     /**
@@ -272,42 +456,74 @@ class SamedayCourier extends CarrierModule
             $this->addMessage('warning', $this->l('Module Sameday Courier is working in testing mode'));
         }
 
+        // Display all messages
+        foreach ($this->messages as $message) {
+            switch ($message['type']) {
+                case 'success':
+                    $this->html .= $this->displayConfirmation($message['content']);
+                    break;
+                case 'danger':
+                case 'error':
+                    $this->html .= $this->displayError($message['content']);
+                    break;
+                case 'warning':
+                    $this->html .= $this->displayWarning($message['content']);
+                    break;
+                case 'info':
+                    $this->html .= $this->displayInformation($message['content']);
+                    break;
+            }
+        }
+
         return $this->html;
     }
 
     private function importCities()
     {
-        if (!file_exists($file = __DIR__ . '/utils/cities.json')) {
-            return;
-        }
-
-        if (false === ($json = file_get_contents($file))) {
-            return;
-        }
-
-        $samedayCities = json_decode($json, true);
-        foreach ($samedayCities as $samedayCity) {
-            if (false === $city = SamedayCity::findByCityId($samedayCity['city_id'])) {
-                $city = new SamedayCity();
-            } else {
-                $city = new SamedayCity($city['id']);
+        try {
+            if (!file_exists($file = __DIR__ . '/utils/cities.json')) {
+                $this->addMessage('danger', $this->l('Cities file not found!'));
+                return;
             }
 
-            $city->city_id = $samedayCity['city_id'];
-            $city->city_name = $samedayCity['city_name'];
-            $city->county_code = $samedayCity['county_code'];
-            $city->country_code = $samedayCity['country_code'];
-            $city->postal_code = $samedayCity['postal_code'];
+            if (false === ($json = file_get_contents($file))) {
+                $this->addMessage('danger', $this->l('Cannot read cities file!'));
+                return;
+            }
 
-            $city->save();
+            $samedayCities = json_decode($json, true);
+            if (empty($samedayCities)) {
+                $this->addMessage('warning', $this->l('Cities file is empty or invalid!'));
+                return;
+            }
+
+            $importedCount = 0;
+            foreach ($samedayCities as $samedayCity) {
+                if (false === $city = SamedayCity::findByCityId($samedayCity['city_id'])) {
+                    $city = new SamedayCity();
+                } else {
+                    $city = new SamedayCity($city['id']);
+                }
+
+                $city->city_id = $samedayCity['city_id'];
+                $city->city_name = $samedayCity['city_name'];
+                $city->county_code = $samedayCity['county_code'];
+                $city->country_code = $samedayCity['country_code'];
+                $city->postal_code = $samedayCity['postal_code'];
+
+                $city->save();
+                $importedCount++;
+            }
+
+            /**
+             * After import, store cities in Cache in order to use them
+             */
+            Cache::getInstance()->set('sameday_cities', SamedayCity::getCities());
+
+            $this->addMessage('success', sprintf($this->l('%d cities have been imported successfully!'), $importedCount));
+        } catch (Exception $e) {
+            $this->addMessage('danger', sprintf($this->l('Error importing cities: %s'), $e->getMessage()));
         }
-
-        /**
-         * After import, store cities in Cache in order to use them
-         */
-        Cache::getInstance()->set('sameday_cities', SamedayCity::getCities());
-
-        $this->addMessage('success', $this->l('All cities have been imported!'));
     }
 
     /**
@@ -315,101 +531,255 @@ class SamedayCourier extends CarrierModule
      */
     private function importServices()
     {
-        $client = $this->samedayApiHelper->getSamedayClient();
-
-        $remoteServices = [];
-        $page = 1;
-
-        do {
-            $servicesRequest = new \Sameday\Requests\SamedayGetServicesRequest();
-            $servicesRequest->setPage($page++);
-
-            if (Configuration::get('SAMEDAY_DEBUG_MODE', 0)) {
-                $this->log('Import services', SamedayConstants::DEBUG);
-                $this->log($servicesRequest, SamedayConstants::DEBUG);
-            }
-
-            $sameday = new \Sameday\Sameday($client);
-
-            $lockerService = null;
-            try {
-                $response = $sameday->getServices($servicesRequest);
-                SamedayService::deactivateAllServices();
-
-                foreach ($response->getServices() as $service) {
-                    $oldService = SamedayService::findByCode($service->getCode());
-                    $optionalTaxes = null;
-                    if (!empty($service->getOptionalTaxes())) {
-                        foreach ($service->getOptionalTaxes() as $optionalTaxObject) {
-                            $optionalTaxes[] = array(
-                                'id' => $optionalTaxObject->getId(),
-                                'type' => $optionalTaxObject->getPackageType()->getType(),
-                                'code' => $optionalTaxObject->getCode()
-                            );
-                        }
-                    }
-
-                    $optionalTaxes = null !== $optionalTaxes ? serialize($optionalTaxes) : '';
-
-                    if (!$oldService) {
-                        $samedayService = new SamedayService();
-                        $samedayService->id_service = $service->getId();
-                        $samedayService->name = $service->getName();
-                        $samedayService->code = $service->getCode();
-                        $samedayService->delivery_type = $service->getDeliveryType()->getId();
-                        $samedayService->delivery_type_name = $service->getDeliveryType()->getName();
-                        $samedayService->live_mode = (int) Configuration::get('SAMEDAY_LIVE_MODE', 0);
-                        $samedayService->service_optional_taxes = $optionalTaxes;
-                        $samedayService->save();
-                    } else {
-                        SamedayService::updateService($service->getCode(), $optionalTaxes, $oldService['id']);
-
-                        if ($oldService['code'] === SamedayConstants::LOCKER_NEXT_DAY_CODE) {
-                            $lockerService = $oldService;
-                        }
-                    }
-
-                    // Save as current sameday service.
-                    $remoteServices[] = $service->getId();
-                }
-
-            } catch (Exception $e) {
-                $this->addMessage('danger', $e->getMessage());
-                $this->log($e->getMessage(), SamedayConstants::ERROR);
-
+        $this->addMessage('info', 'DEBUG: importServices() function started at ' . date('Y-m-d H:i:s'));
+        error_log("SAMEDAY DEBUG: importServices() function started");
+        
+        try {
+            // Verify API credentials are configured
+            $user = Configuration::get('SAMEDAY_ACCOUNT_USER');
+            $password = Configuration::get('SAMEDAY_ACCOUNT_PASSWORD');
+            
+            $this->addMessage('info', 'DEBUG: Checking API credentials - User: ' . (!empty($user) ? 'SET' : 'EMPTY') . ', Password: ' . (!empty($password) ? 'SET' : 'EMPTY'));
+            error_log("SAMEDAY DEBUG: API credentials check - User: " . (!empty($user) ? 'SET' : 'EMPTY') . 
+                      ", Password: " . (!empty($password) ? 'SET' : 'EMPTY'));
+            
+            // Log actual values for debugging (be careful with passwords in production)
+            $this->addMessage('info', 'DEBUG: Actual user value: "' . $user . '"');
+            $this->addMessage('info', 'DEBUG: Password length: ' . strlen($password) . ' characters');
+            error_log("SAMEDAY DEBUG: Actual user: '" . $user . "', Password length: " . strlen($password));
+            
+            if (empty($user) || empty($password)) {
+                $this->addMessage('danger', $this->l('API credentials not configured. Please set username and password first.'));
+                error_log("SAMEDAY DEBUG: API credentials missing - aborting import");
                 return;
             }
-        } while ($page <= $response->getPages());
 
-        // Build array of local services.
-        $localServices = array_map(
-            static function ($oldService) {
-                return array(
-                    'id' => $oldService['id'],
-                    'id_service' => $oldService['id_service']
-                );
-            },
-
-            SamedayService::getServices()
-        );
-
-        // Delete local services that aren't present in remote services anymore.
-        foreach ($localServices as $localService) {
-            if (!in_array((int) $localService['id_service'], $remoteServices, true)) {
-                SamedayService::deleteService($localService['id']);
+            // Set global reference for debugging
+            $GLOBALS['sameday_debug_module'] = $this;
+            
+            $client = $this->samedayApiHelper->getSamedayClient();
+            
+            $this->addMessage('info', 'DEBUG: Current live_mode setting: ' . (Configuration::get('SAMEDAY_LIVE_MODE', 0) ? 'Live' : 'Test'));
+            error_log("SAMEDAY DEBUG: Live mode setting: " . Configuration::get('SAMEDAY_LIVE_MODE', 0));
+            
+            // Debug the API URL being used
+            $liveMode = Configuration::get('SAMEDAY_LIVE_MODE', 0);
+            $country = Configuration::get('SAMEDAY_HOST_COUNTRY') ?: SamedayConstants::API_HOST_LOCALE_RO;
+            $testingMode = $liveMode ?: SamedayConstants::DEMO_MODE;
+            $apiUrl = SamedayConstants::SAMEDAY_ENVS[$country][$testingMode];
+            $this->addMessage('info', 'DEBUG: API URL: ' . $apiUrl . ' (Mode: ' . ($liveMode ? 'Live' : 'Test') . ')');
+            error_log("SAMEDAY DEBUG: API URL: " . $apiUrl);
+            
+            if (!$client) {
+                $this->addMessage('danger', $this->l('Failed to create API client. Please check your credentials.'));
+                error_log("SAMEDAY DEBUG: Failed to create API client");
+                return;
             }
-        }
+            
+            error_log("SAMEDAY DEBUG: API client created successfully");
 
-        // Update PUDO status to be same as Locker NextDay
-        if (null !== $lockerService) {
-            if (false !== $pudoService = SamedayService::findByCode(SamedayConstants::PUDO_CODE) ?? false) {
-                $pudoService['status'] = $lockerService['status'];
+            $remoteServices = [];
+            $page = 1;
+            $importedCount = 0;
 
-                SamedayService::updateServiceStatus($pudoService);
+            $this->addMessage('info', 'DEBUG: Starting service import loop - Page: ' . $page);
+            error_log("SAMEDAY DEBUG: Starting service import loop");
+
+            do {
+                $this->addMessage('info', 'DEBUG: Creating services request for page ' . $page);
+                error_log("SAMEDAY DEBUG: Creating services request for page " . $page);
+                
+                $servicesRequest = new \Sameday\Requests\SamedayGetServicesRequest();
+                $servicesRequest->setPage($page++);
+
+                $this->addMessage('info', 'DEBUG: Services request created, page set to ' . ($page - 1));
+                error_log("SAMEDAY DEBUG: Services request created successfully");
+
+                if (Configuration::get('SAMEDAY_DEBUG_MODE', 0)) {
+                    $this->log('Import services', SamedayConstants::DEBUG);
+                    $this->log($servicesRequest, SamedayConstants::DEBUG);
+                }
+
+                $sameday = new \Sameday\Sameday($client);
+
+                $this->addMessage('info', 'DEBUG: Sameday SDK client created successfully');
+                error_log("SAMEDAY DEBUG: Sameday SDK client created");
+
+                $lockerService = null;
+                try {
+                    $this->addMessage('info', 'DEBUG: About to call API for services on page ' . ($page - 1));
+                    error_log("SAMEDAY DEBUG: About to call sameday->getServices()");
+                    
+                    $response = $sameday->getServices($servicesRequest);
+                    
+                    $this->addMessage('info', 'DEBUG: API Response received - Type: ' . gettype($response));
+                    error_log("SAMEDAY DEBUG: API Response object type: " . gettype($response));
+                    
+                    if (!$response) {
+                        $this->addMessage('danger', $this->l('Empty response from API. Please check your connection.'));
+                        error_log("SAMEDAY DEBUG: API response is null or empty");
+                        return;
+                    }
+                    
+                    $services = $response->getServices();
+                    $servicesCount = is_array($services) ? count($services) : 0;
+                    $this->addMessage('info', 'DEBUG: API returned ' . $servicesCount . ' services on page ' . ($page - 1));
+                    error_log("SAMEDAY DEBUG: API returned " . $servicesCount . " services on page " . ($page - 1));
+                    
+                    if (empty($services)) {
+                        $this->addMessage('warning', $this->l('No services returned from API for current mode.'));
+                        error_log("SAMEDAY DEBUG: API returned empty services array");
+                        return;
+                    }
+                    
+                    error_log("SAMEDAY DEBUG: Starting to process " . count($services) . " services");
+                    
+                    SamedayService::deactivateAllServices();
+
+                    foreach ($services as $service) {
+                        $oldService = SamedayService::findByCode($service->getCode());
+                        $optionalTaxes = null;
+                        if (!empty($service->getOptionalTaxes())) {
+                            foreach ($service->getOptionalTaxes() as $optionalTaxObject) {
+                                $optionalTaxes[] = array(
+                                    'id' => $optionalTaxObject->getId(),
+                                    'type' => $optionalTaxObject->getPackageType()->getType(),
+                                    'code' => $optionalTaxObject->getCode()
+                                );
+                            }
+                        }
+
+                        $optionalTaxes = null !== $optionalTaxes ? serialize($optionalTaxes) : '';
+
+                        if (!$oldService) {
+                            $samedayService = new SamedayService();
+                            $samedayService->id_service = $service->getId();
+                            $samedayService->name = $service->getName();
+                            $samedayService->code = $service->getCode();
+                            $samedayService->delivery_type = $service->getDeliveryType()->getId();
+                            $samedayService->delivery_type_name = $service->getDeliveryType()->getName();
+                            $samedayService->live_mode = (int) Configuration::get('SAMEDAY_LIVE_MODE', 0);
+                            $samedayService->service_optional_taxes = $optionalTaxes;
+                            
+                            $saveResult = $samedayService->save();
+                            if ($saveResult) {
+                                $importedCount++;
+                                error_log("SAMEDAY DEBUG: Successfully saved service: " . $service->getName() . " (Code: " . $service->getCode() . ")");
+                            } else {
+                                error_log("SAMEDAY DEBUG: Failed to save service: " . $service->getName() . " (Code: " . $service->getCode() . ")");
+                                $this->addMessage('danger', sprintf($this->l('Failed to save service: %s'), $service->getName()));
+                            }
+                        } else {
+                            SamedayService::updateService($service->getCode(), $optionalTaxes, $oldService['id']);
+
+                            if ($oldService['code'] === SamedayConstants::LOCKER_NEXT_DAY_CODE) {
+                                $lockerService = $oldService;
+                            }
+                        }
+
+                        // Save as current sameday service.
+                        $remoteServices[] = $service->getId();
+                    }
+
+                } catch (Exception $e) {
+                    $this->addMessage('danger', sprintf($this->l('Error importing services: %s'), $e->getMessage()));
+                    $this->addMessage('info', 'DEBUG: Exception caught - Type: ' . get_class($e));
+                    $this->addMessage('info', 'DEBUG: Exception message: ' . $e->getMessage());
+                    
+                    // Special handling for authorization exceptions
+                    if ($e instanceof \Sameday\Exceptions\SamedayAuthorizationException) {
+                        $this->addMessage('warning', 'AUTHORIZATION ERROR: Your account does not have permission to access services in LIVE mode.');
+                        $currentMode = Configuration::get('SAMEDAY_LIVE_MODE', 0) ? 'Live' : 'Test';
+                        $this->addMessage('info', 'Current mode: ' . $currentMode);
+                        
+                        if ($currentMode === 'Live') {
+                            $this->addMessage('info', 'SOLUTION 1: Switch to TEST mode - Change "Live Mode" setting to "No" and try again.');
+                            $this->addMessage('info', 'SOLUTION 2: Contact Sameday support to enable Live services access for your account.');
+                            $this->addMessage('info', 'Note: Most accounts need to be explicitly approved for Live mode access.');
+                        } else {
+                            $this->addMessage('info', 'SOLUTION: Contact Sameday support - even Test mode access seems restricted.');
+                        }
+                    }
+                    
+                    // Check for authentication exceptions too
+                    if ($e instanceof \Sameday\Exceptions\SamedayAuthenticationException) {
+                        $this->addMessage('warning', 'AUTHENTICATION ERROR: Invalid credentials or wrong mode.');
+                        $currentMode = Configuration::get('SAMEDAY_LIVE_MODE', 0) ? 'Live' : 'Test';
+                        $this->addMessage('info', 'Current mode: ' . $currentMode);
+                        $this->addMessage('info', 'SOLUTION: Check if your credentials match the current mode (Live/Test).');
+                    }
+                    
+                    $this->addMessage('info', 'DEBUG: Exception trace: ' . $e->getTraceAsString());
+                    error_log("SAMEDAY DEBUG: Exception caught: " . get_class($e) . " - " . $e->getMessage());
+                    error_log("SAMEDAY DEBUG: Exception trace: " . $e->getTraceAsString());
+                    $this->log($e->getMessage(), SamedayConstants::ERROR);
+                    return;
+                }
+            } while ($page <= $response->getPages());
+
+            error_log("SAMEDAY DEBUG: Finished processing all pages. Total imported: " . $importedCount);
+
+            // Build array of local services.
+            $localServices = array_map(
+                static function ($oldService) {
+                    return array(
+                        'id' => $oldService['id'],
+                        'id_service' => $oldService['id_service']
+                    );
+                },
+
+                SamedayService::getServices()
+            );
+
+            error_log("SAMEDAY DEBUG: Found " . count($localServices) . " local services after import");
+
+            // Delete local services that aren't present in remote services anymore.
+            $deletedCount = 0;
+            foreach ($localServices as $localService) {
+                if (!in_array((int) $localService['id_service'], $remoteServices, true)) {
+                    SamedayService::deleteService($localService['id']);
+                    $deletedCount++;
+                }
             }
-        }
 
-        $this->addMessage('success', $this->l('The services were successfully imported'));
+            error_log("SAMEDAY DEBUG: Deleted " . $deletedCount . " obsolete services");
+
+            // Update PUDO status to be same as Locker NextDay
+            if (null !== $lockerService) {
+                if (false !== $pudoService = SamedayService::findByCode(SamedayConstants::PUDO_CODE) ?? false) {
+                    $pudoService['status'] = $lockerService['status'];
+
+                    SamedayService::updateServiceStatus($pudoService);
+                }
+            }
+
+            // Debug final verification
+            $allServicesAfter = SamedayService::getAllServices();
+            $liveMode = Configuration::get('SAMEDAY_LIVE_MODE', 0);
+            $servicesForCurrentMode = array_filter($allServicesAfter, function($service) use ($liveMode) {
+                return (int)$service['live_mode'] === (int)$liveMode;
+            });
+            
+            error_log("SAMEDAY DEBUG: Final verification - Total services in DB: " . count($allServicesAfter) . 
+                      ", Services for current mode (live_mode=" . $liveMode . "): " . count($servicesForCurrentMode));
+
+            if ($importedCount > 0 || $deletedCount > 0) {
+                $this->addMessage('success', sprintf(
+                    $this->l('%d services imported successfully! %d obsolete services removed.'), 
+                    $importedCount, 
+                    $deletedCount
+                ));
+            } else {
+                $this->addMessage('info', $this->l('No new services to import. All services are up to date.'));
+            }
+
+        } catch (Exception $e) {
+            $this->addMessage('danger', sprintf($this->l('Fatal error importing services: %s'), $e->getMessage()));
+            $this->addMessage('info', 'DEBUG: Fatal exception caught - Type: ' . get_class($e));
+            $this->addMessage('info', 'DEBUG: Fatal exception message: ' . $e->getMessage());
+            error_log("SAMEDAY DEBUG: Fatal exception caught: " . get_class($e) . " - " . $e->getMessage());
+            error_log("SAMEDAY DEBUG: Fatal exception trace: " . $e->getTraceAsString());
+        }
     }
 
     /**
@@ -500,6 +870,26 @@ class SamedayCourier extends CarrierModule
                         'prefix' => '<i class="icon icon-lock"></i>',
                         'name'   => 'SAMEDAY_ACCOUNT_PASSWORD',
                         'label'  => $this->l('Password'),
+                        'desc'   => $this->l('Leave empty to keep current password'),
+                    ),
+                    array(
+                        'type'    => 'switch',
+                        'label'   => $this->l('Live mode'),
+                        'name'    => 'SAMEDAY_LIVE_MODE',
+                        'desc'    => $this->l('Enable for production use, disable for testing'),
+                        'is_bool' => true,
+                        'values'  => array(
+                            array(
+                                'id'    => 'active_on',
+                                'value' => true,
+                                'label' => $this->l('Live'),
+                            ),
+                            array(
+                                'id'    => 'active_off',
+                                'value' => false,
+                                'label' => $this->l('Test'),
+                            ),
+                        ),
                     ),
                     array(
                         'type'  => 'select',
@@ -644,6 +1034,15 @@ class SamedayCourier extends CarrierModule
                 ),
                 'submit'  => array(
                     'title' => $this->l('Save'),
+                ),
+                'buttons' => array(
+                    array(
+                        'title' => $this->l('Test API Connection'),
+                        'class' => 'btn btn-default pull-right',
+                        'icon' => 'process-icon-test',
+                        'name' => 'submitSamedaytest_api_connection',
+                        'type' => 'submit'
+                    ),
                 )
             ),
         );
@@ -674,7 +1073,11 @@ class SamedayCourier extends CarrierModule
             ),
             'SAMEDAY_ACCOUNT_PASSWORD' => Tools::getValue(
                 'SAMEDAY_ACCOUNT_PASSWORD',
-                Configuration::get('SAMEDAY_ACCOUNT_PASSWORD', null)
+                '' // Don't pre-fill password for security reasons
+            ),
+            'SAMEDAY_LIVE_MODE' => Tools::getValue(
+                'SAMEDAY_LIVE_MODE',
+                Configuration::get('SAMEDAY_LIVE_MODE', false)
             ),
             'SAMEDAY_ESTIMATED_COST' => Tools::getValue(
                 'SAMEDAY_ESTIMATED_COST',
@@ -727,6 +1130,42 @@ class SamedayCourier extends CarrierModule
     private function renderServicesList()
     {
         $services = SamedayService::getServicesToDisplay();
+        
+        // Debug: Check all services in database regardless of live_mode
+        $allServicesQuery = sprintf(
+            "SELECT * FROM %s",
+            _DB_PREFIX_ . 'sameday_services'
+        );
+        $allServicesInDb = Db::getInstance()->executeS($allServicesQuery);
+        
+        // Debug: Add detailed message about services
+        $totalServices = count(SamedayService::getAllServices());
+        $displayServices = count($services);
+        $allInDb = count($allServicesInDb);
+        $liveMode = Configuration::get('SAMEDAY_LIVE_MODE', 0);
+        
+        $this->addMessage('info', sprintf(
+            $this->l('Database info: %d total services in DB, %d matching live_mode=%s, %d displayed. Current live_mode setting: %s'), 
+            $allInDb,
+            $totalServices, 
+            $liveMode,
+            $displayServices,
+            $liveMode ? 'Live' : 'Test'
+        ));
+        
+        if ($allInDb > 0 && $totalServices == 0) {
+            $this->addMessage('warning', $this->l('Services exist in database but live_mode filter excludes them. Check if you imported in a different mode.'));
+        }
+        
+        if ($totalServices > 0) {
+            $this->addMessage('success', sprintf(
+                $this->l('Found %d services for current mode (%s)'), 
+                $totalServices,
+                $liveMode ? 'Live' : 'Test'
+            ));
+        } else {
+            $this->addMessage('warning', $this->l('No services found for current mode. Please import services or check Live/Test mode setting.'));
+        }
 
         $fields = array(
             'name' => array(
@@ -1091,6 +1530,11 @@ class SamedayCourier extends CarrierModule
      */
     protected function postProcess()
     {
+        if ((Tools::isSubmit('submitSamedaytest_api_connection')) === true) {
+            $this->testApiConnection();
+            return;
+        }
+
         if ((Tools::isSubmit('submit_sameday')) === true) {
             $form_values = $this->getConfigFormValues();
 
@@ -1100,7 +1544,15 @@ class SamedayCourier extends CarrierModule
                 $form_values[SamedayPersistenceDataHandler::KEYS[\Sameday\SamedayClient::KEY_TOKEN_EXPIRES]] = '';
 
                 foreach (array_keys($form_values) as $key) {
-                    Configuration::updateValue($key, Tools::getValue($key));
+                    $value = Tools::getValue($key);
+                    
+                    // Special handling for password fields - don't overwrite if empty
+                    if ($key === 'SAMEDAY_ACCOUNT_PASSWORD' && empty($value)) {
+                        // Keep existing password if field is empty
+                        $value = Configuration::get($key);
+                    }
+                    
+                    Configuration::updateValue($key, $value);
                 }
 
                 // Import local data Services and PickupPoints
@@ -1114,6 +1566,8 @@ class SamedayCourier extends CarrierModule
         }
 
         if (Tools::isSubmit('import_services')) {
+            $this->addMessage('info', 'DEBUG: Import services button clicked - starting import process...');
+            error_log("SAMEDAY DEBUG: Import services button clicked at " . date('Y-m-d H:i:s'));
             $this->importServices();
         }
 
@@ -1903,10 +2357,16 @@ class SamedayCourier extends CarrierModule
             return '';
         }
 
+        // Determine template version based on PrestaShop version
+        $fileVersion = '1.7'; // Default for PS 1.7+
+        if ($this->getMajorVersion() >= 8) {
+            $fileVersion = '8';
+        }
+
         return $this->displayCarrierExtraContent(
             $params,
             $service,
-            '1.7'
+            $fileVersion
         );
     }
 
@@ -2638,5 +3098,71 @@ class SamedayCourier extends CarrierModule
         }
 
         return SamedayConstants::TOGGLE_HTML_ELEMENT['hide'];
+    }
+
+    /**
+     * Test API connection with current credentials
+     */
+    private function testApiConnection()
+    {
+        $user = Tools::getValue('SAMEDAY_ACCOUNT_USER');
+        $password = Tools::getValue('SAMEDAY_ACCOUNT_PASSWORD');
+        $liveMode = Tools::getValue('SAMEDAY_LIVE_MODE', 0);
+
+        if (empty($user) || empty($password)) {
+            $this->addMessage('danger', $this->l('Please enter both username and password before testing the connection.'));
+            return;
+        }
+
+        $envModes = SamedayConstants::SAMEDAY_ENVS;
+        $connectionSuccess = false;
+        $testedConnections = [];
+
+        foreach ($envModes as $hostCountry => $envModesByHosts) {
+            foreach ($envModesByHosts as $envMode => $apiUrl) {
+                // Test only the selected mode, or both if testing
+                if ($liveMode == 1 && $envMode == SamedayConstants::DEMO_MODE) {
+                    continue;
+                }
+                if ($liveMode == 0 && $envMode == SamedayConstants::LIVE_MODE) {
+                    continue;
+                }
+
+                try {
+                    $client = $this->samedayApiHelper->getSamedayClient(
+                        $user,
+                        $password,
+                        $apiUrl,
+                        $envMode
+                    );
+
+                    if ($client->login()) {
+                        $modeText = ($envMode == SamedayConstants::LIVE_MODE) ? 'Live' : 'Test';
+                        $countryText = strtoupper($hostCountry);
+                        
+                        $this->addMessage('success', 
+                            sprintf($this->l('✅ API Connection successful! Mode: %s, Country: %s, URL: %s'), 
+                                $modeText, $countryText, $apiUrl)
+                        );
+                        $connectionSuccess = true;
+                        $testedConnections[] = [$modeText, $countryText, $apiUrl];
+                    }
+                } catch (Exception $e) {
+                    $modeText = ($envMode == SamedayConstants::LIVE_MODE) ? 'Live' : 'Test';
+                    $countryText = strtoupper($hostCountry);
+                    
+                    $this->addMessage('warning', 
+                        sprintf($this->l('❌ Connection failed for %s mode (%s): %s'), 
+                            $modeText, $countryText, $e->getMessage())
+                    );
+                }
+            }
+        }
+
+        if (!$connectionSuccess) {
+            $this->addMessage('danger', $this->l('No successful connections found. Please check your credentials.'));
+        } else {
+            $this->addMessage('info', $this->l('Connection test completed. You can now save the configuration to import services.'));
+        }
     }
 }

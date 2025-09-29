@@ -41,6 +41,10 @@ class SamedayApiHelper
             $urlEnv = SamedayConstants::SAMEDAY_ENVS[$country][$testingMode];
         }
 
+        // Debug logging for API client creation
+        error_log("SAMEDAY DEBUG API CLIENT: User='$user', Password length=" . strlen($password) . 
+                  ", Country='$country', TestingMode=$testingMode, URL='$urlEnv'");
+
         return new Sameday\SamedayClient(
             $user,
             $password,
